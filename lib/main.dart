@@ -1,125 +1,180 @@
 import 'package:flutter/material.dart';
+import 'package:mqtt_client/mqtt_client.dart'; // Import av MQTT-klienten
+import 'package:mqtt_client/mqtt_server_client.dart';  // Import av MqttServerClient-klassen
 
 void main() {
-  runApp(const MyApp());
+  runApp(MyApp());
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
-
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'MQTT Alarm and Sensor App',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
+        primarySwatch: Colors.blue,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: MyHomePage(),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  _MyHomePageState createState() => _MyHomePageState();
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+  MqttServerClient? client;
+  String mqttMessage = "No sensor data yet"; // Sanntid sensordata
+  String alarmTime = "No alarm set"; // Viser alarmtid
+  String debugText = "Debug: Waiting for action..."; // Debug tekst for status
+  TextEditingController ipController = TextEditingController(); // For å skrive inn IP-adressen
+  TextEditingController portController = TextEditingController(); // For å skrive inn portnummer
 
-  void _incrementCounter() {
+  @override
+  void initState() {
+    super.initState();
+    portController.text = '1883'; // Sett standardporten til 1883
+  }
+
+  // Koble til MQTT broker
+  Future<void> connectToMQTT() async {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      debugText = "Connecting to MQTT broker...";
     });
+
+    String brokerIP = ipController.text;
+    int brokerPort = int.tryParse(portController.text) ?? 1883;
+
+    client = MqttServerClient.withPort(brokerIP, 'flutter_client', brokerPort);
+    client!.logging(on: true); // Slå på logging for debugging
+
+    try {
+      await client!.connect(); // Koble til MQTT-broker
+      setState(() {
+        debugText = "Connected to MQTT broker at $brokerIP:$brokerPort";
+      });
+      print('Connected to MQTT broker');
+
+      // Abonner på sensordata-topic
+      client!.subscribe('sensor/data', MqttQos.atMostOnce);
+
+      // Lytt etter innkommende sensordata-meldinger
+      client!.updates!.listen((List<MqttReceivedMessage<MqttMessage>> c) {
+        final MqttPublishMessage recMess = c[0].payload as MqttPublishMessage;
+        final String message = MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
+
+        setState(() {
+          mqttMessage = message; // Oppdater skjermen med sensordata
+          debugText = "Received message: $message from topic: ${c[0].topic}";
+        });
+
+        print('Received message: $message from topic: ${c[0].topic}');
+      });
+    } catch (e) {
+      setState(() {
+        debugText = "Failed to connect: $e";
+      });
+      print('Exception: $e');
+      client!.disconnect();
+    }
+  }
+
+  // Funksjon for å sende alarmtid via MQTT
+  void sendAlarmTime(String time) {
+    final builder = MqttClientPayloadBuilder();
+    builder.addString(time); // Alarmtid som meldingsinnhold
+
+    client!.publishMessage('app/alarmtime', MqttQos.atMostOnce, builder.payload!);
+    setState(() {
+      debugText = "Alarm time sent: $time";
+    });
+    print('Alarm time sent: $time');
+  }
+
+  // Funksjon for å velge alarmtid ved hjelp av Flutter sin innebygde time picker
+  Future<void> _selectTime(BuildContext context) async {
+    final TimeOfDay? picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+    if (picked != null) {
+      setState(() {
+        alarmTime = '${picked.hour}:${picked.minute}';
+      });
+      sendAlarmTime(alarmTime); // Sender alarmtid via MQTT
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+        title: Text("MQTT Alarm & Sensor App"),
       ),
       body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20.0),
+              child: TextField(
+                controller: ipController,
+                decoration: InputDecoration(labelText: 'Enter Broker IP Address'),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20.0),
+              child: TextField(
+                controller: portController,
+                decoration: InputDecoration(labelText: 'Enter Broker Port (default 1883)'),
+                keyboardType: TextInputType.number,
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                connectToMQTT(); // Koble til MQTT broker
+              },
+              child: Text('Connect to MQTT Broker'),
+            ),
+            SizedBox(height: 20),
+            Text(
+              'Sensor Data:',
+              style: TextStyle(fontSize: 24),
             ),
             Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+              mqttMessage,  // Viser sanntid sensordata fra MQTT
+              style: TextStyle(fontSize: 20),
+            ),
+            SizedBox(height: 40),
+            Text(
+              'Set Alarm Time:',
+              style: TextStyle(fontSize: 24),
+            ),
+            Text(
+              alarmTime,  // Viser valgt alarmtid
+              style: TextStyle(fontSize: 20),
+            ),
+            SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () {
+                _selectTime(context);  // Åpner Flutter sin innebygde time picker
+              },
+              child: Text('Pick Alarm Time'),
+            ),
+            SizedBox(height: 40),
+            Text(
+              'Debug Information:',
+              style: TextStyle(fontSize: 24),
+            ),
+            Text(
+              debugText,  // Viser debug-informasjon
+              style: TextStyle(fontSize: 16),
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
